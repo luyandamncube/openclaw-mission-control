@@ -19,18 +19,13 @@ from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.tasks import Task
-from app.schemas.agents import (
-    AgentCreate,
-    AgentHeartbeat,
-    AgentHeartbeatCreate,
-    AgentRead,
-    AgentUpdate,
-)
+from app.schemas.agents import AgentCreate, AgentHeartbeat, AgentHeartbeatCreate, AgentRead, AgentUpdate
 from app.services.activity_log import record_activity
 from app.services.agent_provisioning import (
     DEFAULT_HEARTBEAT_CONFIG,
     cleanup_agent,
     provision_agent,
+    provision_main_agent,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -121,6 +116,39 @@ def _require_gateway(session: Session, board: Board) -> tuple[Gateway, GatewayCl
     return gateway, GatewayClientConfig(url=gateway.url, token=gateway.token)
 
 
+def _gateway_client_config(gateway: Gateway) -> GatewayClientConfig:
+    if not gateway.url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Gateway url is required",
+        )
+    return GatewayClientConfig(url=gateway.url, token=gateway.token)
+
+
+def _get_gateway_main_session_keys(session: Session) -> set[str]:
+    keys = session.exec(select(Gateway.main_session_key)).all()
+    return {key for key in keys if key}
+
+
+def _is_gateway_main(agent: Agent, main_session_keys: set[str]) -> bool:
+    return bool(agent.openclaw_session_id and agent.openclaw_session_id in main_session_keys)
+
+
+def _to_agent_read(agent: Agent, main_session_keys: set[str]) -> AgentRead:
+    model = AgentRead.model_validate(agent, from_attributes=True)
+    return model.model_copy(update={"is_gateway_main": _is_gateway_main(agent, main_session_keys)})
+
+
+def _find_gateway_for_main_session(
+    session: Session, session_key: str | None
+) -> Gateway | None:
+    if not session_key:
+        return None
+    return session.exec(
+        select(Gateway).where(Gateway.main_session_key == session_key)
+    ).first()
+
+
 async def _ensure_gateway_session(
     agent_name: str,
     config: GatewayClientConfig,
@@ -182,7 +210,11 @@ def list_agents(
     auth: AuthContext = Depends(require_admin_auth),
 ) -> list[Agent]:
     agents = list(session.exec(select(Agent)))
-    return [_with_computed_status(agent) for agent in agents]
+    main_session_keys = _get_gateway_main_session_keys(session)
+    return [
+        _to_agent_read(_with_computed_status(agent), main_session_keys)
+        for agent in agents
+    ]
 
 
 @router.post("", response_model=AgentRead)
@@ -294,7 +326,8 @@ def get_agent(
     agent = session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    return _with_computed_status(agent)
+    main_session_keys = _get_gateway_main_session_keys(session)
+    return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.patch("/{agent_id}", response_model=AgentRead)
@@ -309,6 +342,7 @@ async def update_agent(
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     updates = payload.model_dump(exclude_unset=True)
+    make_main = updates.pop("is_gateway_main", None)
     if "status" in updates:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -322,22 +356,71 @@ async def update_agent(
         updates["identity_profile"] = _normalize_identity_profile(
             updates.get("identity_profile")
         )
-    if not updates and not force:
-        return _with_computed_status(agent)
-    if "board_id" in updates:
+    if not updates and not force and make_main is None:
+        main_session_keys = _get_gateway_main_session_keys(session)
+        return _to_agent_read(_with_computed_status(agent), main_session_keys)
+    main_gateway = _find_gateway_for_main_session(session, agent.openclaw_session_id)
+    gateway_for_main: Gateway | None = None
+    if make_main is True:
+        board_source = updates.get("board_id") or agent.board_id
+        board_for_main = _require_board(session, board_source)
+        gateway_for_main, _ = _require_gateway(session, board_for_main)
+        updates["board_id"] = None
+        agent.is_board_lead = False
+        agent.openclaw_session_id = gateway_for_main.main_session_key
+        main_gateway = gateway_for_main
+    elif make_main is False:
+        agent.openclaw_session_id = None
+    if make_main is not True and "board_id" in updates:
         _require_board(session, updates["board_id"])
     for key, value in updates.items():
         setattr(agent, key, value)
+    if make_main is None and main_gateway is not None:
+        agent.board_id = None
+        agent.is_board_lead = False
     agent.updated_at = datetime.utcnow()
     if agent.heartbeat_config is None:
         agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
     session.add(agent)
     session.commit()
     session.refresh(agent)
-    board = _require_board(session, agent.board_id)
-    gateway, client_config = _require_gateway(session, board)
+    is_main_agent = False
+    board: Board | None = None
+    gateway: Gateway | None = None
+    client_config: GatewayClientConfig | None = None
+    if make_main is True:
+        is_main_agent = True
+        gateway = gateway_for_main
+    elif make_main is None and agent.board_id is None and main_gateway is not None:
+        is_main_agent = True
+        gateway = main_gateway
+    if is_main_agent:
+        if gateway is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Main agent requires a gateway main_session_key",
+            )
+        if not gateway.main_session_key:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Gateway main_session_key is required",
+            )
+        client_config = _gateway_client_config(gateway)
+    else:
+        if agent.board_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="board_id is required for non-main agents",
+            )
+        board = _require_board(session, agent.board_id)
+        gateway, client_config = _require_gateway(session, board)
     session_key = agent.openclaw_session_id or _build_session_key(agent.name)
     try:
+        if client_config is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Gateway configuration is required",
+            )
         await ensure_session(session_key, config=client_config, label=agent.name)
         if not agent.openclaw_session_id:
             agent.openclaw_session_id = session_key
@@ -356,7 +439,15 @@ async def update_agent(
     session.commit()
     session.refresh(agent)
     try:
-        await provision_agent(agent, board, gateway, raw_token, auth.user, action="update")
+        if gateway is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Gateway configuration is required",
+            )
+        if is_main_agent:
+            await provision_main_agent(agent, gateway, raw_token, auth.user, action="update")
+        else:
+            await provision_agent(agent, board, gateway, raw_token, auth.user, action="update")
         await _send_wakeup_message(agent, client_config, verb="updated")
         agent.provision_confirm_token_hash = None
         agent.provision_requested_at = None
@@ -392,7 +483,8 @@ async def update_agent(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unexpected error updating agent provisioning.",
         ) from exc
-    return _with_computed_status(agent)
+    main_session_keys = _get_gateway_main_session_keys(session)
+    return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.post("/{agent_id}/heartbeat", response_model=AgentRead)
@@ -417,7 +509,8 @@ def heartbeat_agent(
     session.add(agent)
     session.commit()
     session.refresh(agent)
-    return _with_computed_status(agent)
+    main_session_keys = _get_gateway_main_session_keys(session)
+    return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.post("/heartbeat", response_model=AgentRead)
@@ -562,7 +655,8 @@ async def heartbeat_or_create_agent(
     session.add(agent)
     session.commit()
     session.refresh(agent)
-    return _with_computed_status(agent)
+    main_session_keys = _get_gateway_main_session_keys(session)
+    return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
 
 @router.delete("/{agent_id}")

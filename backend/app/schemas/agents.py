@@ -23,6 +23,7 @@ class AgentCreate(AgentBase):
 
 class AgentUpdate(SQLModel):
     board_id: UUID | None = None
+    is_gateway_main: bool | None = None
     name: str | None = None
     status: str | None = None
     heartbeat_config: dict[str, Any] | None = None
@@ -34,6 +35,7 @@ class AgentUpdate(SQLModel):
 class AgentRead(AgentBase):
     id: UUID
     is_board_lead: bool = False
+    is_gateway_main: bool = False
     openclaw_session_id: str | None = None
     last_seen_at: datetime | None
     created_at: datetime

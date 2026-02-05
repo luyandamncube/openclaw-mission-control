@@ -161,6 +161,14 @@ def update_board(
             )
     for key, value in updates.items():
         setattr(board, key, value)
+    if updates.get("board_type") == "goal":
+        objective = updates.get("objective") or board.objective
+        metrics = updates.get("success_metrics") or board.success_metrics
+        if not objective or not metrics:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Goal boards require objective and success_metrics",
+            )
     if not board.gateway_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

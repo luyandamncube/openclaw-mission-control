@@ -81,15 +81,25 @@ export default function EditBoardPage() {
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(shouldAutoOpenOnboarding);
 
   useEffect(() => {
-    const mainEl = mainRef.current;
-    if (!mainEl) return;
     if (!isOnboardingOpen) return;
 
-    const previousOverflow = mainEl.style.overflow;
-    mainEl.style.overflow = "hidden";
+    const mainEl = mainRef.current;
+    const previousMainOverflow = mainEl?.style.overflow ?? "";
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousBodyOverflow = document.body.style.overflow;
+
+    if (mainEl) {
+      mainEl.style.overflow = "hidden";
+    }
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
 
     return () => {
-      mainEl.style.overflow = previousOverflow;
+      if (mainEl) {
+        mainEl.style.overflow = previousMainOverflow;
+      }
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.body.style.overflow = previousBodyOverflow;
     };
   }, [isOnboardingOpen]);
 

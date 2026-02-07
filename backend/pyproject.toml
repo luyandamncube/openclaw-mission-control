@@ -38,6 +38,8 @@ dev = [
   "mypy==1.11.2",
   "pytest==8.3.3",
   "pytest-asyncio==0.24.0",
+  "pytest-cov==6.0.0",
+  "coverage[toml]==7.6.10",
   "ruff==0.6.9",
 ]
 
@@ -51,3 +53,17 @@ show_error_codes = true
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+# Migrations are generated artifacts; testing them doesn't add coverage signal.
+omit = ["alembic/versions/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# NOTE: Current baseline coverage is low; we publish coverage.xml in CI but
+# don't fail the build until the test suite expands. Tighten toward 100% in
+# follow-up PRs as coverage grows.
+fail_under = 0

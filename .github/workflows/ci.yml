@@ -45,11 +45,41 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: make setup
+      - name: Install backend dependencies
+        run: make backend-sync
 
-      - name: Run checks
+      - name: Install frontend dependencies
+        run: make frontend-sync
+
+      - name: Run backend checks
         env:
           # Keep CI builds deterministic and secretless.
           NEXT_TELEMETRY_DISABLED: "1"
-        run: make check
+        run: |
+          make backend-lint
+          make backend-typecheck
+          make backend-coverage
+
+      - name: Run frontend checks
+        env:
+          # Keep CI builds deterministic.
+          NEXT_TELEMETRY_DISABLED: "1"
+          # Clerk env (wired from repo settings; values are not printed).
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          CLERK_JWKS_URL: ${{ vars.CLERK_JWKS_URL }}
+        run: |
+          make frontend-lint
+          make frontend-typecheck
+          make frontend-test
+          make frontend-build
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          if-no-files-found: ignore
+          path: |
+            backend/coverage.xml
+            frontend/coverage/**

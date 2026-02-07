@@ -122,9 +122,11 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
           # Vars for shared Clerk OTP helper (frontend/cypress/support/commands.ts)
-          CYPRESS_CLERK_ORIGIN: ${{ vars.CYPRESS_CLERK_ORIGIN }}
-          CYPRESS_CLERK_TEST_EMAIL: ${{ vars.CYPRESS_CLERK_TEST_EMAIL }}
-          CYPRESS_CLERK_TEST_OTP: ${{ vars.CYPRESS_CLERK_TEST_OTP }}
+          # Provide deterministic test creds directly (no secretless skipping).
+          CYPRESS_CLERK_TEST_EMAIL: "jane+clerk_test@example.com"
+          CYPRESS_CLERK_TEST_OTP: "424242"
+          # Provide publishable key to Cypress so helper can derive CLERK_ORIGIN.
+          CYPRESS_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           # Also set for the app itself.
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         run: |

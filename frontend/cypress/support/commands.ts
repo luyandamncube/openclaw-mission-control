@@ -1,5 +1,11 @@
 /// <reference types="cypress" />
 
+type ClerkOtpLoginOptions = {
+  clerkOrigin: string;
+  email: string;
+  otp: string;
+};
+
 function getEnv(name: string, fallback?: string): string {
   const value = Cypress.env(name) as string | undefined;
   if (value) return value;
@@ -19,7 +25,10 @@ function clerkOriginFromPublishableKey(): string {
 
   const decoded = atob(m[1]); // e.g. beloved-ghost-73.clerk.accounts.dev$
   const domain = decoded.replace(/\$$/, "");
-  return `https://${domain}`;
+
+  // Some flows redirect to *.accounts.dev (no clerk. subdomain)
+  const normalized = domain.replace(".clerk.accounts.dev", ".accounts.dev");
+  return `https://${normalized}`;
 }
 
 function normalizeOrigin(value: string): string {
@@ -38,20 +47,24 @@ Cypress.Commands.add("loginWithClerkOtp", () => {
   const email = getEnv("CLERK_TEST_EMAIL", "jane+clerk_test@example.com");
   const otp = getEnv("CLERK_TEST_OTP", "424242");
 
+  const opts: ClerkOtpLoginOptions = { clerkOrigin, email, otp };
+
   // Navigate to a dedicated sign-in route that renders Clerk SignIn top-level.
   // Cypress cannot reliably drive Clerk modal/iframe flows.
   cy.visit("/sign-in");
 
+  // The Clerk UI is hosted on a different origin.
   cy.origin(
-    clerkOrigin,
-    { args: { email, otp } },
-    ({ email: e, otp: o }) => {
-      cy.get('input[type="email"], input[name="identifier"], input[autocomplete="email"]', {
-        timeout: 20_000,
-      })
+    opts.clerkOrigin,
+    { args: { email: opts.email, otp: opts.otp } },
+    ({ email, otp }) => {
+      cy.get(
+        'input[type="email"], input[name="identifier"], input[autocomplete="email"]',
+        { timeout: 20_000 },
+      )
         .first()
         .clear()
-        .type(e, { delay: 10 });
+        .type(email, { delay: 10 });
 
       cy.get('button[type="submit"], button')
         .contains(/continue|sign in|send|next/i)
@@ -63,9 +76,8 @@ Cypress.Commands.add("loginWithClerkOtp", () => {
       )
         .first()
         .clear()
-        .type(o, { delay: 10 });
+        .type(otp, { delay: 10 });
 
-      // Final submit (some flows auto-submit)
       cy.get("body").then(($body) => {
         const hasSubmit = $body
           .find('button[type="submit"], button')
@@ -86,8 +98,13 @@ declare global {
   namespace Cypress {
     interface Chainable {
       /**
-       * Logs in via real Clerk using deterministic OTP credentials.
-       * Defaults (non-secret): jane+clerk_test@example.com / 424242.
+       * Logs in via the real Clerk SignIn page using deterministic OTP credentials.
+       *
+       * Optional env vars (CYPRESS_*):
+       * - CLERK_ORIGIN (e.g. https://<subdomain>.accounts.dev)
+       * - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (used to derive origin when CLERK_ORIGIN not set)
+       * - CLERK_TEST_EMAIL (default: jane+clerk_test@example.com)
+       * - CLERK_TEST_OTP (default: 424242)
        */
       loginWithClerkOtp(): Chainable<void>;
     }

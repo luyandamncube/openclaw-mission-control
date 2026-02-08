@@ -104,6 +104,7 @@ jobs:
 
       - name: Start frontend (dev server)
         env:
+          NEXT_PUBLIC_API_URL: "http://localhost:3000"
           NEXT_TELEMETRY_DISABLED: "1"
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
@@ -120,6 +121,7 @@ jobs:
 
       - name: Run Cypress E2E
         env:
+          NEXT_PUBLIC_API_URL: "http://localhost:3000"
           NEXT_TELEMETRY_DISABLED: "1"
           # Clerk testing tokens (official @clerk/testing Cypress integration)
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}

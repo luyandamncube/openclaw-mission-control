@@ -31,7 +31,7 @@ Mission Control provides that control plane.
 - **Heartbeat**: periodic agent check-in loop for incremental work.
 - **Cron job**: scheduled execution (recurring or one-shot), often isolated from conversational context.
 
-## Non-goals
+## Out of scope
 
 - Not a general-purpose project management suite (we optimize for AI-assisted operations, not every PM feature).
 - Not a full observability platform (we integrate with logs/metrics rather than replacing them).

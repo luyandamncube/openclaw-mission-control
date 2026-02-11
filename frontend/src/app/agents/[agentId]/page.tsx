@@ -32,6 +32,7 @@ import type {
   AgentRead,
   BoardRead,
 } from "@/api/generated/model";
+import { Markdown } from "@/components/atoms/Markdown";
 import { StatusPill } from "@/components/atoms/StatusPill";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
@@ -338,9 +339,18 @@ export default function AgentDetailPage() {
                           key={event.id}
                           className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface)] p-4 text-sm text-muted"
                         >
-                          <p className="font-medium text-strong">
-                            {event.message ?? event.event_type}
-                          </p>
+                          {event.message?.trim() ? (
+                            <div className="select-text cursor-text leading-relaxed text-strong break-words">
+                              <Markdown
+                                content={event.message}
+                                variant="comment"
+                              />
+                            </div>
+                          ) : (
+                            <p className="font-medium text-strong">
+                              {event.event_type}
+                            </p>
+                          )}
                           <p className="mt-1 text-xs text-quiet">
                             {formatTimestamp(event.created_at)}
                           </p>

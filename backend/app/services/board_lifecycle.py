@@ -22,6 +22,7 @@ from app.models.board_webhook_payloads import BoardWebhookPayload
 from app.models.board_webhooks import BoardWebhook
 from app.models.organization_board_access import OrganizationBoardAccess
 from app.models.organization_invite_board_access import OrganizationInviteBoardAccess
+from app.models.tag_assignments import TagAssignment
 from app.models.task_dependencies import TaskDependency
 from app.models.task_fingerprints import TaskFingerprint
 from app.models.tasks import Task
@@ -64,6 +65,14 @@ async def delete_board(session: AsyncSession, *, board: Board) -> OkResponse:
             col(ActivityEvent.task_id).in_(task_ids),
             commit=False,
         )
+        await crud.delete_where(
+            session,
+            TagAssignment,
+            col(TagAssignment.task_id).in_(task_ids),
+            commit=False,
+        )
+    # Keep teardown ordered around FK/reference chains so dependent rows are gone
+    # before deleting their parent task/agent/board records.
     await crud.delete_where(
         session,
         TaskDependency,

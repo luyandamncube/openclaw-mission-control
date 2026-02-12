@@ -35,7 +35,9 @@ async def test_agent_token_lookup_should_not_verify_more_than_once(
         async def exec(self, _stmt: object) -> list[object]:
             agents = []
             for i in range(50):
-                agents.append(SimpleNamespace(agent_token_hash=f"pbkdf2_sha256$1$salt{i}$digest{i}"))
+                agents.append(
+                    SimpleNamespace(agent_token_hash=f"pbkdf2_sha256$1$salt{i}$digest{i}")
+                )
             return agents
 
     calls = {"n": 0}

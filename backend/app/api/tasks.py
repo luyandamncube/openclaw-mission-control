@@ -35,6 +35,7 @@ from app.models.boards import Board
 from app.models.task_dependencies import TaskDependency
 from app.models.task_fingerprints import TaskFingerprint
 from app.models.tasks import Task
+from app.schemas.activity_events import ActivityEventRead
 from app.schemas.common import OkResponse
 from app.schemas.errors import BlockedTaskError
 from app.schemas.pagination import DefaultLimitOffsetPage
@@ -648,7 +649,10 @@ def _task_event_payload(
     deps_map: dict[UUID, list[UUID]],
     dep_status: dict[UUID, str],
 ) -> dict[str, object]:
-    payload: dict[str, object] = {"type": event.event_type}
+    payload: dict[str, object] = {
+        "type": event.event_type,
+        "activity": ActivityEventRead.model_validate(event).model_dump(mode="json"),
+    }
     if event.event_type == "task.comment":
         payload["comment"] = _serialize_comment(event)
         return payload

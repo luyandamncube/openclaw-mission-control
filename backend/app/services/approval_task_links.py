@@ -196,10 +196,10 @@ async def pending_approval_conflicts_by_task(
         legacy_statement = legacy_statement.where(col(Approval.id) != exclude_approval_id)
     legacy_rows = list(await session.exec(legacy_statement))
 
-    for task_id, approval_id, _created_at in legacy_rows:
-        if task_id is None:
+    for legacy_task_id, approval_id, _created_at in legacy_rows:
+        if legacy_task_id is None:
             continue
-        conflicts.setdefault(task_id, approval_id)
+        conflicts.setdefault(legacy_task_id, approval_id)
 
     return conflicts
 

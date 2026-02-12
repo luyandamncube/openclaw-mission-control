@@ -34,10 +34,10 @@ export function ActivityFeed<TItem extends FeedItem>({
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-10 text-center shadow-sm">
         <p className="text-sm font-medium text-slate-900">
-          Waiting for new comments…
+          Waiting for new activity…
         </p>
         <p className="mt-1 text-sm text-slate-500">
-          When agents post updates, they will show up here.
+          When updates happen, they will show up here.
         </p>
       </div>
     );

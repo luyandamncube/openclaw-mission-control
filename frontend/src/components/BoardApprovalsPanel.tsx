@@ -140,9 +140,20 @@ const formatRubricTooltipValue = (
   );
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const payloadAtPath = (payload: Approval["payload"], path: string[]) => {
+  let current: unknown = payload;
+  for (const key of path) {
+    if (!isRecord(current)) return null;
+    current = current[key];
+  }
+  return current ?? null;
+};
+
 const payloadValue = (payload: Approval["payload"], key: string) => {
-  if (!payload) return null;
-  const value = payload[key as keyof typeof payload];
+  const value = payloadAtPath(payload, [key]);
   if (typeof value === "string" || typeof value === "number") {
     return String(value);
   }
@@ -150,11 +161,58 @@ const payloadValue = (payload: Approval["payload"], key: string) => {
 };
 
 const payloadValues = (payload: Approval["payload"], key: string) => {
-  if (!payload) return [];
-  const value = payload[key as keyof typeof payload];
+  const value = payloadAtPath(payload, [key]);
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
 };
+
+const payloadNestedValue = (payload: Approval["payload"], path: string[]) => {
+  const value = payloadAtPath(payload, path);
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  return null;
+};
+
+const payloadNestedValues = (payload: Approval["payload"], path: string[]) => {
+  const value = payloadAtPath(payload, path);
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+};
+
+const payloadFirstLinkedTaskValue = (
+  payload: Approval["payload"],
+  key: "title" | "description",
+) => {
+  const tasks = payloadAtPath(payload, ["linked_request", "tasks"]);
+  if (!Array.isArray(tasks)) return null;
+  for (const task of tasks) {
+    if (!isRecord(task)) continue;
+    const value = task[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return null;
+};
+
+const normalizeRubricScores = (raw: unknown): Record<string, number> => {
+  if (!isRecord(raw)) return {};
+  const entries = Object.entries(raw).flatMap(([key, value]) => {
+    const numeric =
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? Number(value)
+          : Number.NaN;
+    if (!Number.isFinite(numeric)) return [];
+    return [[key, numeric] as const];
+  });
+  return Object.fromEntries(entries);
+};
+
+const payloadRubricScores = (payload: Approval["payload"]) =>
+  normalizeRubricScores(payloadAtPath(payload, ["analytics", "rubric_scores"]));
 
 const approvalTaskIds = (approval: Approval) => {
   const payload = approval.payload ?? {};
@@ -170,6 +228,10 @@ const approvalTaskIds = (approval: Approval) => {
     ...payloadValues(payload, "task_ids"),
     ...payloadValues(payload, "taskIds"),
     ...payloadValues(payload, "taskIDs"),
+    ...payloadNestedValues(payload, ["linked_request", "task_ids"]),
+    ...payloadNestedValues(payload, ["linked_request", "taskIds"]),
+    ...payloadNestedValues(payload, ["linkedRequest", "task_ids"]),
+    ...payloadNestedValues(payload, ["linkedRequest", "taskIds"]),
     ...(singleTaskId ? [singleTaskId] : []),
   ];
   return [...new Set(merged)];
@@ -181,10 +243,20 @@ const approvalSummary = (approval: Approval, boardLabel?: string | null) => {
   const taskId = taskIds[0] ?? null;
   const assignedAgentId =
     payloadValue(payload, "assigned_agent_id") ??
-    payloadValue(payload, "assignedAgentId");
-  const reason = payloadValue(payload, "reason");
-  const title = payloadValue(payload, "title");
-  const description = payloadValue(payload, "description");
+    payloadValue(payload, "assignedAgentId") ??
+    payloadNestedValue(payload, ["assignment", "agent_id"]) ??
+    payloadNestedValue(payload, ["assignment", "agentId"]);
+  const reason =
+    payloadValue(payload, "reason") ??
+    payloadNestedValue(payload, ["decision", "reason"]);
+  const title =
+    payloadValue(payload, "title") ??
+    payloadNestedValue(payload, ["task", "title"]) ??
+    payloadFirstLinkedTaskValue(payload, "title");
+  const description =
+    payloadValue(payload, "description") ??
+    payloadNestedValue(payload, ["task", "description"]) ??
+    payloadFirstLinkedTaskValue(payload, "description");
   const role = payloadValue(payload, "role");
   const isAssign = approval.action_type.includes("assign");
   const rows: Array<{ label: string; value: string }> = [];
@@ -517,14 +589,20 @@ export function BoardApprovalsPanel({
                   if (normalized === "assignee") return false;
                   return true;
                 });
-                const rubricEntries = Object.entries(
-                  selectedApproval.rubric_scores ?? {},
-                ).map(([key, value]) => ({
-                  label: key
-                    .replace(/_/g, " ")
-                    .replace(/\b\w/g, (char) => char.toUpperCase()),
-                  value,
-                }));
+                const rubricScoreSource =
+                  Object.keys(
+                    normalizeRubricScores(selectedApproval.rubric_scores),
+                  ).length > 0
+                    ? normalizeRubricScores(selectedApproval.rubric_scores)
+                    : payloadRubricScores(selectedApproval.payload);
+                const rubricEntries = Object.entries(rubricScoreSource).map(
+                  ([key, value]) => ({
+                    label: key
+                      .replace(/_/g, " ")
+                      .replace(/\b\w/g, (char) => char.toUpperCase()),
+                    value,
+                  }),
+                );
                 const rubricTotal = rubricEntries.reduce(
                   (total, entry) => total + entry.value,
                   0,

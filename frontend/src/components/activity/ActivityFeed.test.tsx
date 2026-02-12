@@ -55,9 +55,9 @@ describe("ActivityFeed", () => {
       />,
     );
 
-    expect(screen.getByText("Waiting for new comments…")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for new activity…")).toBeInTheDocument();
     expect(
-      screen.getByText("When agents post updates, they will show up here."),
+      screen.getByText("When updates happen, they will show up here."),
     ).toBeInTheDocument();
   });
 

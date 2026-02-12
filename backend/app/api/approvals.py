@@ -30,8 +30,8 @@ from app.schemas.approvals import ApprovalCreate, ApprovalRead, ApprovalStatus, 
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.activity_log import record_activity
 from app.services.approval_task_links import (
-    lock_tasks_for_approval,
     load_task_ids_by_approval,
+    lock_tasks_for_approval,
     normalize_task_ids,
     pending_approval_conflicts_by_task,
     replace_approval_task_links,
@@ -408,7 +408,9 @@ async def update_approval(
     if "status" in updates:
         target_status = updates["status"]
         if target_status == "pending" and prior_status != "pending":
-            task_ids_by_approval = await load_task_ids_by_approval(session, approval_ids=[approval.id])
+            task_ids_by_approval = await load_task_ids_by_approval(
+                session, approval_ids=[approval.id]
+            )
             approval_task_ids = task_ids_by_approval.get(approval.id)
             if not approval_task_ids and approval.task_id is not None:
                 approval_task_ids = [approval.task_id]

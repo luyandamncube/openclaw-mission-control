@@ -53,10 +53,7 @@ import {
   streamApprovalsApiV1BoardsBoardIdApprovalsStreamGet,
   updateApprovalApiV1BoardsBoardIdApprovalsApprovalIdPatch,
 } from "@/api/generated/approvals/approvals";
-import {
-  listTaskCommentFeedApiV1ActivityTaskCommentsGet,
-  streamTaskCommentFeedApiV1ActivityTaskCommentsStreamGet,
-} from "@/api/generated/activity/activity";
+import { listActivityApiV1ActivityGet } from "@/api/generated/activity/activity";
 import {
   getBoardGroupSnapshotApiV1BoardsBoardIdGroupSnapshotGet,
   getBoardSnapshotApiV1BoardsBoardIdSnapshotGet,
@@ -83,6 +80,7 @@ import type {
   BoardGroupSnapshot,
   BoardMemoryRead,
   BoardRead,
+  ActivityEventRead,
   OrganizationMemberRead,
   TaskCardRead,
   TaskCommentRead,
@@ -114,6 +112,295 @@ type TaskComment = TaskCommentRead;
 type Approval = ApprovalRead & { status: string };
 
 type BoardChatMessage = BoardMemoryRead;
+
+type LiveFeedEventType =
+  | "task.comment"
+  | "task.created"
+  | "task.updated"
+  | "task.status_changed"
+  | "board.chat"
+  | "board.command"
+  | "agent.created"
+  | "agent.online"
+  | "agent.offline"
+  | "agent.updated"
+  | "approval.created"
+  | "approval.updated"
+  | "approval.approved"
+  | "approval.rejected";
+
+type LiveFeedItem = {
+  id: string;
+  created_at: string;
+  message: string | null;
+  agent_id: string | null;
+  actor_name?: string | null;
+  task_id: string | null;
+  title?: string | null;
+  event_type: LiveFeedEventType;
+};
+
+const LIVE_FEED_EVENT_TYPES = new Set<LiveFeedEventType>([
+  "task.comment",
+  "task.created",
+  "task.updated",
+  "task.status_changed",
+  "board.chat",
+  "board.command",
+  "agent.created",
+  "agent.online",
+  "agent.offline",
+  "agent.updated",
+  "approval.created",
+  "approval.updated",
+  "approval.approved",
+  "approval.rejected",
+]);
+
+const isLiveFeedEventType = (value: string): value is LiveFeedEventType =>
+  LIVE_FEED_EVENT_TYPES.has(value as LiveFeedEventType);
+
+const toLiveFeedFromActivity = (
+  event: ActivityEventRead,
+): LiveFeedItem | null => {
+  if (!isLiveFeedEventType(event.event_type)) {
+    return null;
+  }
+  return {
+    id: event.id,
+    created_at: event.created_at,
+    message: event.message ?? null,
+    agent_id: event.agent_id ?? null,
+    task_id: event.task_id ?? null,
+    title: null,
+    event_type: event.event_type,
+  };
+};
+
+const toLiveFeedFromComment = (comment: TaskCommentRead): LiveFeedItem => ({
+  id: comment.id,
+  created_at: comment.created_at,
+  message: comment.message ?? null,
+  agent_id: comment.agent_id ?? null,
+  actor_name: null,
+  task_id: comment.task_id ?? null,
+  title: null,
+  event_type: "task.comment",
+});
+
+const toLiveFeedFromBoardChat = (memory: BoardChatMessage): LiveFeedItem => {
+  const content = (memory.content ?? "").trim();
+  const actorName = (memory.source ?? "User").trim() || "User";
+  const isCommand = content.startsWith("/");
+  return {
+    id: `chat:${memory.id}`,
+    created_at: memory.created_at,
+    message: content || null,
+    agent_id: null,
+    actor_name: actorName,
+    task_id: null,
+    title: isCommand ? "Board command" : "Board chat",
+    event_type: isCommand ? "board.command" : "board.chat",
+  };
+};
+
+const normalizeAgentStatus = (value?: string | null): string => {
+  const status = (value ?? "").trim().toLowerCase();
+  return status || "offline";
+};
+
+const humanizeAgentStatus = (value: string): string =>
+  value.replace(/_/g, " ").trim() || "offline";
+
+const toLiveFeedFromAgentSnapshot = (agent: Agent): LiveFeedItem => {
+  const status = normalizeAgentStatus(agent.status);
+  const stamp = agent.last_seen_at ?? agent.updated_at ?? agent.created_at;
+  const eventType: LiveFeedEventType =
+    status === "online"
+      ? "agent.online"
+      : status === "offline"
+        ? "agent.offline"
+        : "agent.updated";
+  return {
+    id: `agent:${agent.id}:snapshot:${status}:${stamp}`,
+    created_at: stamp,
+    message: `${agent.name} is ${humanizeAgentStatus(status)}.`,
+    agent_id: agent.id,
+    actor_name: null,
+    task_id: null,
+    title: `Agent · ${agent.name}`,
+    event_type: eventType,
+  };
+};
+
+const toLiveFeedFromAgentUpdate = (
+  agent: Agent,
+  previous: Agent | null,
+): LiveFeedItem | null => {
+  const nextStatus = normalizeAgentStatus(agent.status);
+  const previousStatus = previous
+    ? normalizeAgentStatus(previous.status)
+    : null;
+  const statusChanged =
+    previousStatus !== null && nextStatus !== previousStatus;
+  const isNew = previous === null;
+  const profileChanged =
+    Boolean(previous) &&
+    (previous?.name !== agent.name ||
+      previous?.is_board_lead !== agent.is_board_lead ||
+      JSON.stringify(previous?.identity_profile ?? {}) !==
+        JSON.stringify(agent.identity_profile ?? {}));
+
+  let eventType: LiveFeedEventType;
+  if (isNew) {
+    eventType = "agent.created";
+  } else if (statusChanged && nextStatus === "online") {
+    eventType = "agent.online";
+  } else if (statusChanged && nextStatus === "offline") {
+    eventType = "agent.offline";
+  } else if (statusChanged || profileChanged) {
+    eventType = "agent.updated";
+  } else {
+    return null;
+  }
+
+  const stamp = agent.last_seen_at ?? agent.updated_at ?? agent.created_at;
+  const message =
+    eventType === "agent.created"
+      ? `${agent.name} joined this board.`
+      : eventType === "agent.online"
+        ? `${agent.name} is online.`
+        : eventType === "agent.offline"
+          ? `${agent.name} is offline.`
+          : `${agent.name} updated (${humanizeAgentStatus(nextStatus)}).`;
+  return {
+    id: `agent:${agent.id}:${eventType}:${stamp}`,
+    created_at: stamp,
+    message,
+    agent_id: agent.id,
+    actor_name: null,
+    task_id: null,
+    title: `Agent · ${agent.name}`,
+    event_type: eventType,
+  };
+};
+
+const humanizeLiveFeedApprovalAction = (value: string): string => {
+  const cleaned = value.replace(/[._-]+/g, " ").trim();
+  if (!cleaned) return "Approval";
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+};
+
+const toLiveFeedFromApproval = (
+  approval: ApprovalRead,
+  previous: ApprovalRead | null = null,
+): LiveFeedItem => {
+  const nextStatus = approval.status ?? "pending";
+  const previousStatus = previous?.status ?? null;
+  const eventType: LiveFeedEventType =
+    previousStatus === null
+      ? nextStatus === "approved"
+        ? "approval.approved"
+        : nextStatus === "rejected"
+          ? "approval.rejected"
+          : "approval.created"
+      : nextStatus !== previousStatus
+        ? nextStatus === "approved"
+          ? "approval.approved"
+          : nextStatus === "rejected"
+            ? "approval.rejected"
+            : "approval.updated"
+        : "approval.updated";
+  const stamp =
+    eventType === "approval.created"
+      ? approval.created_at
+      : (approval.resolved_at ?? approval.created_at);
+  const action = humanizeLiveFeedApprovalAction(approval.action_type);
+  const statusText =
+    nextStatus === "approved"
+      ? "approved"
+      : nextStatus === "rejected"
+        ? "rejected"
+        : "pending";
+  const message =
+    eventType === "approval.created"
+      ? `${action} requested (${approval.confidence}% confidence).`
+      : eventType === "approval.approved"
+        ? `${action} approved (${approval.confidence}% confidence).`
+        : eventType === "approval.rejected"
+          ? `${action} rejected (${approval.confidence}% confidence).`
+          : `${action} updated (${statusText}, ${approval.confidence}% confidence).`;
+  return {
+    id: `approval:${approval.id}:${eventType}:${stamp}`,
+    created_at: stamp,
+    message,
+    agent_id: approval.agent_id ?? null,
+    actor_name: null,
+    task_id: approval.task_id ?? null,
+    title: `Approval · ${action}`,
+    event_type: eventType,
+  };
+};
+
+const liveFeedEventLabel = (eventType: LiveFeedEventType): string => {
+  if (eventType === "task.comment") return "Comment";
+  if (eventType === "task.created") return "Created";
+  if (eventType === "task.status_changed") return "Status";
+  if (eventType === "board.chat") return "Chat";
+  if (eventType === "board.command") return "Command";
+  if (eventType === "agent.created") return "Agent";
+  if (eventType === "agent.online") return "Online";
+  if (eventType === "agent.offline") return "Offline";
+  if (eventType === "agent.updated") return "Agent update";
+  if (eventType === "approval.created") return "Approval";
+  if (eventType === "approval.updated") return "Approval update";
+  if (eventType === "approval.approved") return "Approved";
+  if (eventType === "approval.rejected") return "Rejected";
+  return "Updated";
+};
+
+const liveFeedEventPillClass = (eventType: LiveFeedEventType): string => {
+  if (eventType === "task.comment") {
+    return "border-blue-200 bg-blue-50 text-blue-700";
+  }
+  if (eventType === "task.created") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (eventType === "task.status_changed") {
+    return "border-amber-200 bg-amber-50 text-amber-700";
+  }
+  if (eventType === "board.chat") {
+    return "border-teal-200 bg-teal-50 text-teal-700";
+  }
+  if (eventType === "board.command") {
+    return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700";
+  }
+  if (eventType === "agent.created") {
+    return "border-violet-200 bg-violet-50 text-violet-700";
+  }
+  if (eventType === "agent.online") {
+    return "border-lime-200 bg-lime-50 text-lime-700";
+  }
+  if (eventType === "agent.offline") {
+    return "border-slate-300 bg-slate-100 text-slate-700";
+  }
+  if (eventType === "agent.updated") {
+    return "border-indigo-200 bg-indigo-50 text-indigo-700";
+  }
+  if (eventType === "approval.created") {
+    return "border-cyan-200 bg-cyan-50 text-cyan-700";
+  }
+  if (eventType === "approval.updated") {
+    return "border-sky-200 bg-sky-50 text-sky-700";
+  }
+  if (eventType === "approval.approved") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (eventType === "approval.rejected") {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+  return "border-slate-200 bg-slate-100 text-slate-700";
+};
 
 const normalizeTask = (task: TaskCardRead): Task => ({
   ...task,
@@ -271,7 +558,7 @@ const ChatMessageCard = memo(function ChatMessageCard({
 ChatMessageCard.displayName = "ChatMessageCard";
 
 const LiveFeedCard = memo(function LiveFeedCard({
-  comment,
+  item,
   taskTitle,
   authorName,
   authorRole,
@@ -279,7 +566,7 @@ const LiveFeedCard = memo(function LiveFeedCard({
   onViewTask,
   isNew,
 }: {
-  comment: TaskComment;
+  item: LiveFeedItem;
   taskTitle: string;
   authorName: string;
   authorRole?: string | null;
@@ -287,7 +574,9 @@ const LiveFeedCard = memo(function LiveFeedCard({
   onViewTask?: () => void;
   isNew?: boolean;
 }) {
-  const message = (comment.message ?? "").trim();
+  const message = (item.message ?? "").trim();
+  const eventLabel = liveFeedEventLabel(item.event_type);
+  const eventPillClass = liveFeedEventPillClass(item.event_type);
   return (
     <div
       className={cn(
@@ -323,19 +612,16 @@ const LiveFeedCard = memo(function LiveFeedCard({
             >
               {taskTitle}
             </button>
-            {onViewTask ? (
-              <button
-                type="button"
-                onClick={onViewTask}
-                className="inline-flex flex-shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
-                aria-label="View task"
-              >
-                View task
-                <ArrowUpRight className="h-3 w-3" />
-              </button>
-            ) : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+            <span
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                eventPillClass,
+              )}
+            >
+              {eventLabel}
+            </span>
             <span className="font-medium text-slate-700">{authorName}</span>
             {authorRole ? (
               <>
@@ -345,7 +631,7 @@ const LiveFeedCard = memo(function LiveFeedCard({
             ) : null}
             <span className="text-slate-300">·</span>
             <span className="text-slate-400">
-              {formatShortTimestamp(comment.created_at)}
+              {formatShortTimestamp(item.created_at)}
             </span>
           </div>
         </div>
@@ -413,8 +699,8 @@ export default function BoardDetailPage() {
   const selectedTaskIdRef = useRef<string | null>(null);
   const openedTaskIdFromUrlRef = useRef<string | null>(null);
   const [comments, setComments] = useState<TaskComment[]>([]);
-  const [liveFeed, setLiveFeed] = useState<TaskComment[]>([]);
-  const liveFeedRef = useRef<TaskComment[]>([]);
+  const [liveFeed, setLiveFeed] = useState<LiveFeedItem[]>([]);
+  const liveFeedRef = useRef<LiveFeedItem[]>([]);
   const liveFeedFlashTimersRef = useRef<Record<string, number>>({});
   const [liveFeedFlashIds, setLiveFeedFlashIds] = useState<
     Record<string, boolean>
@@ -467,15 +753,15 @@ export default function BoardDetailPage() {
   const isLiveFeedOpenRef = useRef(false);
   const toastIdRef = useRef(0);
   const toastTimersRef = useRef<Record<number, number>>({});
-  const pushLiveFeed = useCallback((comment: TaskComment) => {
+  const pushLiveFeed = useCallback((item: LiveFeedItem) => {
     const alreadySeen = liveFeedRef.current.some(
-      (item) => item.id === comment.id,
+      (existing) => existing.id === item.id,
     );
     setLiveFeed((prev) => {
-      if (prev.some((item) => item.id === comment.id)) {
+      if (prev.some((existing) => existing.id === item.id)) {
         return prev;
       }
-      const next = [comment, ...prev];
+      const next = [item, ...prev];
       return next.slice(0, 50);
     });
 
@@ -483,20 +769,20 @@ export default function BoardDetailPage() {
     if (!isLiveFeedOpenRef.current) return;
 
     setLiveFeedFlashIds((prev) =>
-      prev[comment.id] ? prev : { ...prev, [comment.id]: true },
+      prev[item.id] ? prev : { ...prev, [item.id]: true },
     );
 
     if (typeof window === "undefined") return;
-    const existingTimer = liveFeedFlashTimersRef.current[comment.id];
+    const existingTimer = liveFeedFlashTimersRef.current[item.id];
     if (existingTimer !== undefined) {
       window.clearTimeout(existingTimer);
     }
-    liveFeedFlashTimersRef.current[comment.id] = window.setTimeout(() => {
-      delete liveFeedFlashTimersRef.current[comment.id];
+    liveFeedFlashTimersRef.current[item.id] = window.setTimeout(() => {
+      delete liveFeedFlashTimersRef.current[item.id];
       setLiveFeedFlashIds((prev) => {
-        if (!prev[comment.id]) return prev;
+        if (!prev[item.id]) return prev;
         const next = { ...prev };
-        delete next[comment.id];
+        delete next[item.id];
         return next;
       });
     }, 2200);
@@ -566,6 +852,7 @@ export default function BoardDetailPage() {
   useEffect(() => {
     if (!isLiveFeedOpen) return;
     if (!isSignedIn || !boardId) return;
+    if (isLoading) return;
     if (liveFeedHistoryLoadedRef.current) return;
 
     let cancelled = false;
@@ -574,28 +861,83 @@ export default function BoardDetailPage() {
 
     const fetchHistory = async () => {
       try {
-        const result = await listTaskCommentFeedApiV1ActivityTaskCommentsGet({
-          board_id: boardId,
-          limit: 200,
-        });
-        if (cancelled) return;
-        if (result.status !== 200) {
-          throw new Error("Unable to load live feed.");
+        const sourceTasks =
+          tasksRef.current.length > 0 ? tasksRef.current : tasks;
+        const sourceApprovals =
+          approvalsRef.current.length > 0 ? approvalsRef.current : approvals;
+        const sourceAgents =
+          agentsRef.current.length > 0 ? agentsRef.current : agents;
+        const sourceChatMessages =
+          chatMessagesRef.current.length > 0
+            ? chatMessagesRef.current
+            : chatMessages;
+        const boardTaskIds = new Set(sourceTasks.map((task) => task.id));
+        const collected: LiveFeedItem[] = [];
+        const seen = new Set<string>();
+        const limit = 200;
+        const recentChatMessages = [...sourceChatMessages]
+          .sort((a, b) => {
+            const aTime = apiDatetimeToMs(a.created_at) ?? 0;
+            const bTime = apiDatetimeToMs(b.created_at) ?? 0;
+            return bTime - aTime;
+          })
+          .slice(0, 50);
+        for (const memory of recentChatMessages) {
+          const chatItem = toLiveFeedFromBoardChat(memory);
+          if (seen.has(chatItem.id)) continue;
+          seen.add(chatItem.id);
+          collected.push(chatItem);
+          if (collected.length >= 200) break;
         }
-        const items = result.data.items ?? [];
+        for (const agent of sourceAgents) {
+          if (collected.length >= 200) break;
+          const agentItem = toLiveFeedFromAgentSnapshot(agent);
+          if (seen.has(agentItem.id)) continue;
+          seen.add(agentItem.id);
+          collected.push(agentItem);
+          if (collected.length >= 200) break;
+        }
+        for (const approval of sourceApprovals) {
+          if (collected.length >= 200) break;
+          const approvalItem = toLiveFeedFromApproval(approval);
+          if (seen.has(approvalItem.id)) continue;
+          seen.add(approvalItem.id);
+          collected.push(approvalItem);
+          if (collected.length >= 200) break;
+        }
+
+        for (
+          let offset = 0;
+          collected.length < 200 && offset < 1000;
+          offset += limit
+        ) {
+          const result = await listActivityApiV1ActivityGet({
+            limit,
+            offset,
+          });
+          if (cancelled) return;
+          if (result.status !== 200) {
+            throw new Error("Unable to load live feed.");
+          }
+          const items = result.data.items ?? [];
+          for (const event of items) {
+            const mapped = toLiveFeedFromActivity(event);
+            if (!mapped?.task_id) continue;
+            if (!boardTaskIds.has(mapped.task_id)) continue;
+            if (seen.has(mapped.id)) continue;
+            seen.add(mapped.id);
+            collected.push(mapped);
+            if (collected.length >= 200) break;
+          }
+          if (collected.length >= 200 || items.length < limit) {
+            break;
+          }
+        }
         liveFeedHistoryLoadedRef.current = true;
 
-        const mapped: TaskComment[] = items.map((item) => ({
-          id: item.id,
-          message: item.message ?? null,
-          agent_id: item.agent_id ?? null,
-          task_id: item.task_id ?? null,
-          created_at: item.created_at,
-        }));
-
         setLiveFeed((prev) => {
-          const map = new Map<string, TaskComment>();
-          [...prev, ...mapped].forEach((item) => map.set(item.id, item));
+          const map = new Map<string, LiveFeedItem>();
+          [...prev, ...collected].forEach((item) => map.set(item.id, item));
           const merged = [...map.values()];
           merged.sort((a, b) => {
             const aTime = apiDatetimeToMs(a.created_at) ?? 0;
@@ -619,7 +961,16 @@ export default function BoardDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [boardId, isLiveFeedOpen, isSignedIn]);
+  }, [
+    agents,
+    approvals,
+    boardId,
+    chatMessages,
+    isLiveFeedOpen,
+    isLoading,
+    isSignedIn,
+    tasks,
+  ]);
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -831,7 +1182,7 @@ export default function BoardDetailPage() {
   useEffect(() => {
     if (!isPageActive) return;
     if (!isSignedIn || !boardId || !board) return;
-    if (!isChatOpen) return;
+    if (!isChatOpen && !isLiveFeedOpen) return;
     let isCancelled = false;
     const abortController = new AbortController();
     const backoff = createExponentialBackoff(SSE_RECONNECT_BACKOFF);
@@ -891,6 +1242,7 @@ export default function BoardDetailPage() {
                   memory?: BoardChatMessage;
                 };
                 if (payload.memory?.tags?.includes("chat")) {
+                  pushLiveFeed(toLiveFeedFromBoardChat(payload.memory));
                   setChatMessages((prev) => {
                     const exists = prev.some(
                       (item) => item.id === payload.memory?.id,
@@ -936,126 +1288,15 @@ export default function BoardDetailPage() {
         window.clearTimeout(reconnectTimeout);
       }
     };
-  }, [board, boardId, isChatOpen, isPageActive, isSignedIn]);
-
-  useEffect(() => {
-    if (!isPageActive) return;
-    if (!isLiveFeedOpen) return;
-    if (!isSignedIn || !boardId) return;
-    let isCancelled = false;
-    const abortController = new AbortController();
-    const backoff = createExponentialBackoff(SSE_RECONNECT_BACKOFF);
-    let reconnectTimeout: number | undefined;
-
-    const connect = async () => {
-      try {
-        const since = (() => {
-          let latestTime = 0;
-          liveFeedRef.current.forEach((comment) => {
-            const time = apiDatetimeToMs(comment.created_at);
-            if (time !== null && time > latestTime) {
-              latestTime = time;
-            }
-          });
-          return latestTime ? new Date(latestTime).toISOString() : null;
-        })();
-
-        const streamResult =
-          await streamTaskCommentFeedApiV1ActivityTaskCommentsStreamGet(
-            {
-              board_id: boardId,
-              since: since ?? null,
-            },
-            {
-              headers: { Accept: "text/event-stream" },
-              signal: abortController.signal,
-            },
-          );
-        if (streamResult.status !== 200) {
-          throw new Error("Unable to connect live feed stream.");
-        }
-        const response = streamResult.data as Response;
-        if (!(response instanceof Response) || !response.body) {
-          throw new Error("Unable to connect live feed stream.");
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (!isCancelled) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value && value.length) {
-            backoff.reset();
-          }
-          buffer += decoder.decode(value, { stream: true });
-          buffer = buffer.replace(/\r\n/g, "\n");
-          let boundary = buffer.indexOf("\n\n");
-          while (boundary !== -1) {
-            const raw = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
-            const lines = raw.split("\n");
-            let eventType = "message";
-            let data = "";
-            for (const line of lines) {
-              if (line.startsWith("event:")) {
-                eventType = line.slice(6).trim();
-              } else if (line.startsWith("data:")) {
-                data += line.slice(5).trim();
-              }
-            }
-            if (eventType === "comment" && data) {
-              try {
-                const payload = JSON.parse(data) as {
-                  comment?: {
-                    id: string;
-                    created_at: string;
-                    message?: string | null;
-                    agent_id?: string | null;
-                    task_id?: string | null;
-                  };
-                };
-                if (payload.comment) {
-                  pushLiveFeed({
-                    id: payload.comment.id,
-                    created_at: payload.comment.created_at,
-                    message: payload.comment.message ?? null,
-                    agent_id: payload.comment.agent_id ?? null,
-                    task_id: payload.comment.task_id ?? null,
-                  });
-                }
-              } catch {
-                // ignore malformed
-              }
-            }
-            boundary = buffer.indexOf("\n\n");
-          }
-        }
-      } catch {
-        // Reconnect handled below.
-      }
-
-      if (!isCancelled) {
-        if (reconnectTimeout !== undefined) {
-          window.clearTimeout(reconnectTimeout);
-        }
-        const delay = backoff.nextDelayMs();
-        reconnectTimeout = window.setTimeout(() => {
-          reconnectTimeout = undefined;
-          void connect();
-        }, delay);
-      }
-    };
-
-    void connect();
-    return () => {
-      isCancelled = true;
-      abortController.abort();
-      if (reconnectTimeout !== undefined) {
-        window.clearTimeout(reconnectTimeout);
-      }
-    };
-  }, [boardId, isLiveFeedOpen, isPageActive, isSignedIn, pushLiveFeed]);
+  }, [
+    board,
+    boardId,
+    isChatOpen,
+    isLiveFeedOpen,
+    isPageActive,
+    isSignedIn,
+    pushLiveFeed,
+  ]);
 
   useEffect(() => {
     if (!isPageActive) return;
@@ -1129,6 +1370,13 @@ export default function BoardDetailPage() {
                 };
                 if (payload.approval) {
                   const normalized = normalizeApproval(payload.approval);
+                  const previousApproval =
+                    approvalsRef.current.find(
+                      (item) => item.id === normalized.id,
+                    ) ?? null;
+                  pushLiveFeed(
+                    toLiveFeedFromApproval(normalized, previousApproval),
+                  );
                   setApprovals((prev) => {
                     const index = prev.findIndex(
                       (item) => item.id === normalized.id,
@@ -1201,7 +1449,7 @@ export default function BoardDetailPage() {
         window.clearTimeout(reconnectTimeout);
       }
     };
-  }, [board, boardId, isPageActive, isSignedIn]);
+  }, [board, boardId, isPageActive, isSignedIn, pushLiveFeed]);
 
   useEffect(() => {
     if (!selectedTask) {
@@ -1279,14 +1527,22 @@ export default function BoardDetailPage() {
               try {
                 const payload = JSON.parse(data) as {
                   type?: string;
+                  activity?: ActivityEventRead;
                   task?: TaskRead;
                   comment?: TaskCommentRead;
                 };
+                const liveEvent = payload.activity
+                  ? toLiveFeedFromActivity(payload.activity)
+                  : payload.type === "task.comment" && payload.comment
+                    ? toLiveFeedFromComment(payload.comment)
+                    : null;
+                if (liveEvent) {
+                  pushLiveFeed(liveEvent);
+                }
                 if (
                   payload.comment?.task_id &&
                   payload.type === "task.comment"
                 ) {
-                  pushLiveFeed(payload.comment);
                   setComments((prev) => {
                     if (
                       selectedTaskIdRef.current !== payload.comment?.task_id
@@ -1454,6 +1710,17 @@ export default function BoardDetailPage() {
                 const payload = JSON.parse(data) as { agent?: AgentRead };
                 if (payload.agent) {
                   const normalized = normalizeAgent(payload.agent);
+                  const previousAgent =
+                    agentsRef.current.find(
+                      (item) => item.id === normalized.id,
+                    ) ?? null;
+                  const liveEvent = toLiveFeedFromAgentUpdate(
+                    normalized,
+                    previousAgent,
+                  );
+                  if (liveEvent) {
+                    pushLiveFeed(liveEvent);
+                  }
                   setAgents((prev) => {
                     const index = prev.findIndex(
                       (item) => item.id === normalized.id,
@@ -1500,7 +1767,7 @@ export default function BoardDetailPage() {
         window.clearTimeout(reconnectTimeout);
       }
     };
-  }, [board, boardId, isOrgAdmin, isPageActive, isSignedIn]);
+  }, [board, boardId, isOrgAdmin, isPageActive, isSignedIn, pushLiveFeed]);
 
   const resetForm = () => {
     setTitle("");
@@ -1568,6 +1835,7 @@ export default function BoardDetailPage() {
         }
         const created = result.data;
         if (created.tags?.includes("chat")) {
+          pushLiveFeed(toLiveFeedFromBoardChat(created));
           setChatMessages((prev) => {
             const exists = prev.some((item) => item.id === created.id);
             if (exists) return prev;
@@ -1586,7 +1854,7 @@ export default function BoardDetailPage() {
         return { ok: false, error: message };
       }
     },
-    [boardId, isSignedIn],
+    [boardId, isSignedIn, pushLiveFeed],
   );
 
   const handleSendChat = useCallback(
@@ -3237,7 +3505,7 @@ export default function BoardDetailPage() {
                 Live feed
               </p>
               <p className="mt-1 text-sm font-medium text-slate-900">
-                Realtime task comments across this board.
+                Realtime task, approval, agent, and board-chat activity.
               </p>
             </div>
             <button
@@ -3258,30 +3526,36 @@ export default function BoardDetailPage() {
               </div>
             ) : orderedLiveFeed.length === 0 ? (
               <p className="text-sm text-slate-500">
-                Waiting for new comments…
+                Waiting for new activity…
               </p>
             ) : (
               <div className="space-y-3">
-                {orderedLiveFeed.map((comment) => {
-                  const taskId = comment.task_id;
-                  const authorAgent = comment.agent_id
-                    ? (agents.find((agent) => agent.id === comment.agent_id) ??
+                {orderedLiveFeed.map((item) => {
+                  const taskId = item.task_id;
+                  const authorAgent = item.agent_id
+                    ? (agents.find((agent) => agent.id === item.agent_id) ??
                       null)
                     : null;
-                  const authorName = authorAgent ? authorAgent.name : "Admin";
+                  const authorName =
+                    item.actor_name?.trim() ||
+                    (authorAgent ? authorAgent.name : "Admin");
                   const authorRole = authorAgent
                     ? agentRoleLabel(authorAgent)
                     : null;
                   const authorAvatar = authorAgent
                     ? agentAvatarLabel(authorAgent)
-                    : "A";
+                    : (authorName[0] ?? "A").toUpperCase();
                   return (
                     <LiveFeedCard
-                      key={comment.id}
-                      comment={comment}
-                      isNew={Boolean(liveFeedFlashIds[comment.id])}
+                      key={item.id}
+                      item={item}
+                      isNew={Boolean(liveFeedFlashIds[item.id])}
                       taskTitle={
-                        taskId ? (taskTitleById.get(taskId) ?? "Task") : "Task"
+                        item.title
+                          ? item.title
+                          : taskId
+                            ? (taskTitleById.get(taskId) ?? "Unknown task")
+                            : "Activity"
                       }
                       authorName={authorName}
                       authorRole={authorRole}

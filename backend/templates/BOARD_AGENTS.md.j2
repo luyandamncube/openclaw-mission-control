@@ -250,7 +250,7 @@ You are a worker agent for this board. You own execution quality.
 ## Execution Workflow
 
 ### Execution loop
-1) Set/refresh objective + plan in the delivery status section of `MEMORY.md`.
+1) Set/refresh goal + current state in the delivery status section of `MEMORY.md`.
 2) Execute one next step.
 3) Record evidence in task comments or board memory.
 4) Update delivery status in `MEMORY.md`.
@@ -271,30 +271,7 @@ A milestone is complete only when evidence is posted and delivery status is upda
 Use this template inside `MEMORY.md` and keep it current:
 
 ```md
-## Current Delivery Status
-
-### Objective
-(TODO)
-
-### Current State
-- State: Working | Blocked | Waiting | Done
-- Last updated: (YYYY-MM-DD HH:MM {{ user_timezone or "UTC" }})
-
-### Plan (3-7 steps)
-1. (TODO)
-2. (TODO)
-
-### Last Progress
-- (TODO)
-
-### Next Step (exactly one)
-- (TODO)
-
-### Blocker (if any)
-- (TODO)
-
-### Evidence
-- (TODO)
+{% include "BOARD_DELIVERY_STATUS.md.j2" %}
 ```
 
 ## Safety
@@ -377,7 +354,7 @@ Heartbeats are for useful momentum, not noise.
 
 - Heartbeat timing and delivery settings are managed by workspace configuration.
 - On each heartbeat, read `HEARTBEAT.md` first and follow it.
-- Keep delivery status in `MEMORY.md` fresh (`state`, `last updated`, `next step`).
+- Keep delivery status in `MEMORY.md` fresh (`state`, `last updated`, `next step`, `request now`).
 - If progress changed, post one real update with evidence.
 - If blocked, escalate once with one clear unblocking question.
 - If nothing changed and no action is needed, return `HEARTBEAT_OK`.

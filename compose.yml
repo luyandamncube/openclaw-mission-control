@@ -24,14 +24,13 @@ services:
 
   backend:
     build:
-      # Build from repo root so the backend image can include repo-level assets
-      # like `backend/templates/`.
       context: .
       dockerfile: backend/Dockerfile
     env_file:
       - ./backend/.env.example
+    volumes:
+      - device_keys:/app/app/services/openclaw/.device-keys
     environment:
-      # Override localhost defaults for container networking
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-mission_control}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       DB_AUTO_MIGRATE: ${DB_AUTO_MIGRATE:-true}
@@ -45,6 +44,9 @@ services:
         condition: service_started
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 
   frontend:
     build:
@@ -90,3 +92,4 @@ services:
 
 volumes:
   postgres_data:
+  device_keys:
